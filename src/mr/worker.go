@@ -20,6 +20,7 @@ type KeyValue struct {
 	Value string
 }
 
+
 // for sorting by key.
 type ByKey []KeyValue
 
@@ -39,6 +40,124 @@ func ihash(key string) int {
 }
 
 //
+// use DoMap handle the input files
+// filename: the filename of input
+// nReduce: the number of Reduce
+// x: the id of this map worker
+// mapf: the Map Process of this model
+//
+func DoMap(x int, nReduce int,filename string,mapf func(string, string) []KeyValue) ([]string,error){
+
+	// Step 1: Read from Input file
+	file, err := os.Open(filename)
+
+	if err != nil{
+		log.Fatalf("cannot open %v", filename)
+		return nil,err
+	}
+	content, err:= ioutil.ReadAll(file)
+	if err!= nil{
+		log.Fatalf("cannot read %v", filename)
+		return nil, err
+	}
+
+	file.Close()
+
+	// Step 2: Run Map function
+	kva :=mapf(filename,string(content))
+
+	// Step 3: Partition the result of this Map process to intermediate k/v
+	var intermediate []ByKey
+	for i:= 0; i< nReduce; i++{
+		intermediate = append(intermediate, ByKey{})
+	}
+
+	for _,kv := range kva{
+		r := ihash(kv.Key) % nReduce
+        intermediate[r] = append(intermediate[r], kv)
+	}
+
+
+	// Step 4: Intermediate to disk
+	var intermediates []string
+
+	for i := 0; i < nReduce ; i++ {
+
+		reduceName := fmt.Sprintf("/tmp/reduce_%v_%v.txt", x, i)
+		intermediates = append(intermediates,reduceName)
+		ofile, _ := os.Create(reduceName)
+		enc := json.NewEncoder(ofile)
+		for _, kv := range intermediate[i] {
+			err := enc.Encode(&kv)
+			if err != nil {
+				log.Fatalf("Step 4: Intermediate to disk error %v",filename)
+				return nil, err
+			}
+		}
+		ofile.Close()
+	}
+
+	// Return the related intermediate files
+	return intermediates, nil
+}
+
+func DoReduce(r int, intermediates []string, reducef func(string, []string) string) error {
+
+	// Step: Get the intermediates from Map Worker
+	var kvas ByKey
+	for _, filename := range intermediates{
+		file, err := os.Open(filename)
+		if err != nil {
+			log.Fatalf("cannot open %v", filename)
+			return err
+		}
+		var kva ByKey
+		dec := json.NewDecoder(file)
+		for {
+			var kv KeyValue
+			if err := dec.Decode(&kv); err != nil {
+				break
+			}
+			kva = append(kva, kv)
+		}
+		kvas = append(kvas,kva...)
+		file.Close()
+	}
+
+	// Step 2: sort by key to find all same keys
+	sort.Sort(kvas)
+	oname := fmt.Sprintf("mr-out-%v", r)
+	ofile, err := os.Create(oname)
+	if err!= nil{
+		log.Fatalf("cannot Create file %v", oname)
+		return err
+	}
+
+	// Step 3: storage the result to the final file
+	i := 0
+	for i < len(kvas) {
+		j := i + 1
+		for j < len(kvas) && kvas[j].Key == kvas[i].Key {
+			j++
+		}
+		var values []string
+		for k := i; k < j; k++ {
+			values = append(values, kvas[k].Value)
+		}
+		output := reducef(kvas[i].Key, values)
+
+		// this is the correct format for each line of Reduce output.
+		fmt.Fprintf(ofile, "%v %v\n", kvas[i].Key, output)
+
+		i = j
+	}
+
+	ofile.Close()
+
+	return nil
+}
+
+//
 // main/mrworker.go calls this function.
 //
 func Worker(mapf func(string, string) []KeyValue,
@@ -49,6 +168,7 @@ func Worker(mapf func(string, string) []KeyValue,
 	inMap := true
 	x := 99
 	nReduce := 0
+	nMap := 0
 	for inMap {
 		reply := CallExample(x)
 		inMap = !reply.IsReduce
@@ -57,6 +177,7 @@ func Worker(mapf func(string, string) []KeyValue,
 			x = reply.Y
 			if nReduce == 0 {
 				nReduce = reply.NReduce
+				nMap = reply.NMap
 			}
 			// Map Worker
 			go func(x, nReduce int, filename string) {
@@ -83,7 +204,7 @@ func Worker(mapf func(string, string) []KeyValue,
 				}
 
 				for i := 0; i < nReduce; i++ {
-					reduceName := fmt.Sprintf("reduce_%v_%v.txt", x, i)
+					reduceName := fmt.Sprintf("/tmp/reduce_%v_%v.txt", x, i)
 					ofile, _ := os.Create(reduceName)
 					enc := json.NewEncoder(ofile)
 					for _, kv := range kvGroup[i] {
@@ -107,55 +228,58 @@ func Worker(mapf func(string, string) []KeyValue,
 
 		count.Add(1)
 
-		go func(r int) {
-
+		go func(r,nMap,x int) {
 			defer count.Done()
-
-			reply := CallExample(r)
-			filename := fmt.Sprintf("reduce_%v_%v.txt", "*", reply.Y)
-			file, err := os.Open(filename)
-			if err != nil {
-				log.Fatalf("cannot open %v", filename)
-			}
-			var kva ByKey
-			dec := json.NewDecoder(file)
-			for {
-				var kv KeyValue
-				if err := dec.Decode(&kv); err != nil {
-					break
+			var kvas ByKey
+			CallExample(r)
+			for i:=0; i<nMap;i++{
+				filename := fmt.Sprintf("/tmp/reduce_%d_%d.txt", i+100, r)
+				file, err := os.Open(filename)
+				if err != nil {
+					log.Fatalf("cannot open %v", filename)
 				}
-				kva = append(kva, kv)
+				var kva ByKey
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+				kvas = append(kvas,kva...)
+				file.Close()
 			}
-			file.Close()
-			sort.Sort(kva)
-			oname := fmt.Sprintf("mr-out-%v", reply.Y)
+
+			sort.Sort(kvas)
+			oname := fmt.Sprintf("mr-out-%v", r)
 			ofile, _ := os.Create(oname)
 
 			i := 0
-			for i < len(kva) {
+			for i < len(kvas) {
 				j := i + 1
-				for j < len(kva) && kva[j].Key == kva[i].Key {
+				for j < len(kvas) && kvas[j].Key == kvas[i].Key {
 					j++
 				}
 				values := []string{}
 				for k := i; k < j; k++ {
-					values = append(values, kva[k].Value)
+					values = append(values, kvas[k].Value)
 				}
-				output := reducef(kva[i].Key, values)
+				output := reducef(kvas[i].Key, values)
 
 				// this is the correct format for each line of Reduce output.
-				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+				fmt.Fprintf(ofile, "%v %v\n", kvas[i].Key, output)
 
 				i = j
 			}
 
 			ofile.Close()
-		}(r)
-
+		}(r,nMap,x)
 		count.Wait()
-
 		// notify all tasks has been finished
 		CallExample(-1)
+		fmt.Println(" all tasks has been finished !")
+
 	}
 
 	// uncomment to send the Example RPC to the master.

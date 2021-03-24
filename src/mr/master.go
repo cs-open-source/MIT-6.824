@@ -8,7 +8,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
-	"time"
+    "fmt"
 )
 
 type State int
@@ -22,6 +22,7 @@ const (
 )
 
 type Master struct {
+
 	Interval map[int]int
 	States   map[int]State
 	sync.Mutex
@@ -30,6 +31,10 @@ type Master struct {
 	M      int64
 	R      int64
 	Finish bool
+
+	// The Intermediate k/v file's name
+	Intermediates map[int][]string
+
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -52,8 +57,7 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 		reply.IsReduce = false
 		reply.Y = args.X + 1
 		reply.NReduce = int(m.R)
-		m.Interval[args.X] = time.Now().Second()
-		m.States[args.X] = InProgress
+		reply.NMap = int(m.M) + 1
 	} else {
 		k := atomic.AddInt64(&m.R, -1)
 		if k >= 0 {
@@ -66,6 +70,30 @@ func (m *Master) Example(args *ExampleArgs, reply *ExampleReply) error {
 	return nil
 }
 
+
+func (m *Master) GetReduceTask(args *ReduceArgs, reply *ReduceReply) error{
+
+	k := atomic.AddInt64(&m.M, -1)
+	if k >= 0{
+		reply.Files = []string{m.Files[k]}
+		reply.Y = int(k + 1)
+	}else { reply.Y = -1}
+	return nil
+}
+
+func (m *Master) GetMapTask(args *MapArgs, reply *MapReply) error {
+	k := atomic.AddInt64(&m.R, -1)
+	if k >= 0 {
+		for i:=0;i<len(m.Files);i++{
+			reply.Files = append(reply.Files, fmt.Sprintf("reduce_%d_%d", i, k-1))
+		}
+		reply.Y = int(k)
+	} else {
+		reply.Y = -1
+	}
+    return nil
+}
+
 //
 // start a thread that listens for RPCs from worker.go
 //
@@ -76,7 +104,8 @@ func (m *Master) server() {
 	sockname := masterSock()
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
-	if e != nil {
+    fmt.Printf("Master listen on prot:%v",sockname)
+    if e != nil {
 		log.Fatal("listen error:", e)
 	}
 	go http.Serve(l, nil)
@@ -85,6 +114,7 @@ func (m *Master) server() {
 //
 // main/mrmaster.go calls Done() periodically to find out
 // if the entire job has finished.
+// todo handle timeout problem
 //
 func (m *Master) Done() bool {
 	ret := false
@@ -96,7 +126,7 @@ func (m *Master) Done() bool {
 
 	for !m.Finish {
 	}
-
+    fmt.Println("All tasks finished")
 	ret = true
 	return ret
 }
@@ -114,7 +144,6 @@ func MakeMaster(files []string, nReduce int) *Master {
 	m.M = int64(len(files))
 	m.R = int64(nReduce)
 	m.Finish = false
-
 	m.server()
 	return &m
 }

@@ -26,7 +26,28 @@ type ExampleReply struct {
 	IsReduce bool
 	Y        int
 	NReduce  int
+	NMap     int
 }
+
+
+type ReduceArgs struct{}
+type ReduceReply struct{
+	// The file to be processed
+	Files []string
+	// Next Task Id
+	Y int
+}
+
+
+type MapArgs struct{
+}
+
+type MapReply struct{
+	Y int
+	Files []string
+}
+
+
 
 // Add your RPC definitions here.
 
