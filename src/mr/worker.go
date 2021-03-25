@@ -9,7 +9,6 @@ import (
 	"net/rpc"
 	"os"
 	"sort"
-	"sync"
 )
 
 //
@@ -19,7 +18,6 @@ type KeyValue struct {
 	Key   string
 	Value string
 }
-
 
 // for sorting by key.
 type ByKey []KeyValue
@@ -43,72 +41,74 @@ func ihash(key string) int {
 // use DoMap handle the input files
 // filename: the filename of input
 // nReduce: the number of Reduce
-// x: the id of this map worker
+// m: the id of this map worker
 // mapf: the Map Process of this model
 //
-func DoMap(x int, nReduce int,filename string,mapf func(string, string) []KeyValue) ([]string,error){
+func DoMap(m int, nReduce int, filename string, mapf func(string, string) []KeyValue) error {
 
 	// Step 1: Read from Input file
 	file, err := os.Open(filename)
 
-	if err != nil{
-		log.Fatalf("cannot open %v", filename)
-		return nil,err
+	if err != nil {
+		log.Fatalf(" DoMap cannot open %v", filename)
+		return err
 	}
-	content, err:= ioutil.ReadAll(file)
-	if err!= nil{
-		log.Fatalf("cannot read %v", filename)
-		return nil, err
+	content, err := ioutil.ReadAll(file)
+	if err != nil {
+		log.Fatalf("DoMap cannot read %v", filename)
+		return err
 	}
 
 	file.Close()
 
 	// Step 2: Run Map function
-	kva :=mapf(filename,string(content))
+	kva := mapf(filename, string(content))
 
 	// Step 3: Partition the result of this Map process to intermediate k/v
 	var intermediate []ByKey
-	for i:= 0; i< nReduce; i++{
+	for i := 0; i < nReduce; i++ {
 		intermediate = append(intermediate, ByKey{})
 	}
 
-	for _,kv := range kva{
+	for _, kv := range kva {
 		r := ihash(kv.Key) % nReduce
-        intermediate[r] = append(intermediate[r], kv)
+		intermediate[r] = append(intermediate[r], kv)
 	}
-
 
 	// Step 4: Intermediate to disk
 	var intermediates []string
 
-	for i := 0; i < nReduce ; i++ {
+	for i := 0; i < nReduce; i++ {
 
-		reduceName := fmt.Sprintf("/tmp/reduce_%v_%v.txt", x, i)
-		intermediates = append(intermediates,reduceName)
+		reduceName := fmt.Sprintf("/tmp/reduce_%v_%v.txt", m, i)
+		intermediates = append(intermediates, reduceName)
 		ofile, _ := os.Create(reduceName)
 		enc := json.NewEncoder(ofile)
 		for _, kv := range intermediate[i] {
 			err := enc.Encode(&kv)
 			if err != nil {
-				log.Fatalf("Step 4: Intermediate to disk error %v",filename)
-				return nil, err
+				log.Fatalf("DoMap Step 4: Intermediate to disk error %v", filename)
+				return err
 			}
 		}
 		ofile.Close()
 	}
 
+	// Notify the master
+	CallNotify(m, intermediates, false)
+
 	// Return the related intermediate files
-	return intermediates, nil
+	return nil
 }
 
 func DoReduce(r int, intermediates []string, reducef func(string, []string) string) error {
 
 	// Step: Get the intermediates from Map Worker
 	var kvas ByKey
-	for _, filename := range intermediates{
+	for _, filename := range intermediates {
 		file, err := os.Open(filename)
 		if err != nil {
-			log.Fatalf("cannot open %v", filename)
+			log.Fatalf("DoReduce cannot open %v", filename)
 			return err
 		}
 		var kva ByKey
@@ -120,7 +120,7 @@ func DoReduce(r int, intermediates []string, reducef func(string, []string) stri
 			}
 			kva = append(kva, kv)
 		}
-		kvas = append(kvas,kva...)
+		kvas = append(kvas, kva...)
 		file.Close()
 	}
 
@@ -128,14 +128,15 @@ func DoReduce(r int, intermediates []string, reducef func(string, []string) stri
 	sort.Sort(kvas)
 	oname := fmt.Sprintf("mr-out-%v", r)
 	ofile, err := os.Create(oname)
-	if err!= nil{
-		log.Fatalf("cannot Create file %v", oname)
+	if err != nil {
+		log.Fatalf("DoReduce cannot Create file %v", oname)
 		return err
 	}
 
 	// Step 3: storage the result to the final file
 	i := 0
 	for i < len(kvas) {
+
 		j := i + 1
 		for j < len(kvas) && kvas[j].Key == kvas[i].Key {
 			j++
@@ -154,6 +155,8 @@ func DoReduce(r int, intermediates []string, reducef func(string, []string) stri
 
 	ofile.Close()
 
+	CallNotify(r, []string{oname}, true)
+
 	return nil
 }
 
@@ -163,151 +166,66 @@ func DoReduce(r int, intermediates []string, reducef func(string, []string) stri
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	// Your worker implementation here.
-	var count sync.WaitGroup
-	inMap := true
+	mapProcess := true
 	x := 99
-	nReduce := 0
-	nMap := 0
-	for inMap {
-		reply := CallExample(x)
-		inMap = !reply.IsReduce
-		if inMap {
-			count.Add(1)
-			x = reply.Y
-			if nReduce == 0 {
-				nReduce = reply.NReduce
-				nMap = reply.NMap
-			}
-			// Map Worker
-			go func(x, nReduce int, filename string) {
-
-				defer count.Done()
-				file, err := os.Open(filename)
-				if err != nil {
-					log.Fatalf("cannot open %v", filename)
-				}
-				content, err := ioutil.ReadAll(file)
-				if err != nil {
-					log.Fatalf("cannot read %v", filename)
-				}
-				file.Close()
-				kva := mapf(filename, string(content))
-				sort.Sort(ByKey(kva))
-
-				// todo 优化
-				var kvGroup [100]ByKey
-				// Partition to R reduce
-				for _, kv := range kva {
-					k := ihash(kv.Key) % nReduce
-					kvGroup[k] = append(kvGroup[k], kv)
-				}
-
-				for i := 0; i < nReduce; i++ {
-					reduceName := fmt.Sprintf("/tmp/reduce_%v_%v.txt", x, i)
-					ofile, _ := os.Create(reduceName)
-					enc := json.NewEncoder(ofile)
-					for _, kv := range kvGroup[i] {
-						err := enc.Encode(&kv)
-						if err != nil {
-							// todo nothing to do here now!
-						}
-					}
-					ofile.Close()
-				}
-
-			}(x, nReduce, reply.File)
+	for mapProcess {
+		reply := CallGetMapTask(x)
+		x += 1
+		mapProcess = !reply.Finished
+		if mapProcess && reply.Y != 0 {
+			go DoMap(reply.Y, reply.NReduce, reply.File, mapf)
 		}
 	}
 
-	// 等待所有的执行完毕
-	count.Wait()
+	fmt.Println("Map Process has finished !")
 
-	// Reduce Worker
-	for r := 0; r < nReduce; r++ {
-
-		count.Add(1)
-
-		go func(r,nMap,x int) {
-			defer count.Done()
-			var kvas ByKey
-			CallExample(r)
-			for i:=0; i<nMap;i++{
-				filename := fmt.Sprintf("/tmp/reduce_%d_%d.txt", i+100, r)
-				file, err := os.Open(filename)
-				if err != nil {
-					log.Fatalf("cannot open %v", filename)
-				}
-				var kva ByKey
-				dec := json.NewDecoder(file)
-				for {
-					var kv KeyValue
-					if err := dec.Decode(&kv); err != nil {
-						break
-					}
-					kva = append(kva, kv)
-				}
-				kvas = append(kvas,kva...)
-				file.Close()
-			}
-
-			sort.Sort(kvas)
-			oname := fmt.Sprintf("mr-out-%v", r)
-			ofile, _ := os.Create(oname)
-
-			i := 0
-			for i < len(kvas) {
-				j := i + 1
-				for j < len(kvas) && kvas[j].Key == kvas[i].Key {
-					j++
-				}
-				values := []string{}
-				for k := i; k < j; k++ {
-					values = append(values, kvas[k].Value)
-				}
-				output := reducef(kvas[i].Key, values)
-
-				// this is the correct format for each line of Reduce output.
-				fmt.Fprintf(ofile, "%v %v\n", kvas[i].Key, output)
-
-				i = j
-			}
-
-			ofile.Close()
-		}(r,nMap,x)
-		count.Wait()
-		// notify all tasks has been finished
-		CallExample(-1)
-		fmt.Println(" all tasks has been finished !")
-
+	reduceProcess := true
+	for reduceProcess {
+		reply := CallGetReduceTask(x)
+		x += 1
+		reduceProcess = !reply.Finished
+		if reduceProcess && reply.Y != 0 {
+			go DoReduce(reply.Y, reply.Files, reducef)
+		}
 	}
 
-	// uncomment to send the Example RPC to the master.
-	// CallExample()
+	fmt.Println("Reduce Process has finished !")
 
 }
 
-//
-// example function to show how to make an RPC call to the master.
-//
-// the RPC argument and reply types are defined in rpc.go.
-//
-func CallExample(x int) ExampleReply {
+func CallGetReduceTask(x int) ReduceTaskReply {
 
-	// declare an argument structure.
-	args := ExampleArgs{}
+	args := ReduceTaskArgs{X: x}
 
-	// fill in the argument(s).
-	args.X = x
+	reply := ReduceTaskReply{}
 
-	// declare a reply structure.
-	reply := ExampleReply{}
+	if call("Master.GetReduceTask", &args, &reply) {
+		fmt.Printf("CallGetReduceTask reply.Y %v reply.File  %v\n", reply.Y, reply.Files)
+	}
 
-	// send the RPC request, wait for the reply.
-	if call("Master.Example", &args, &reply) {
-		// reply.Y should be 100.
-		fmt.Printf("reply.Y %v\n", reply.Y)
-		return reply
+	return reply
+}
+
+func CallGetMapTask(x int) MapTaskReply {
+
+	args := MapTaskArgs{X: x}
+
+	reply := MapTaskReply{}
+
+	if call("Master.GetMapTask", &args, &reply) {
+		fmt.Printf("CallGetMapTask reply.Y %v reply.File  %v\n", reply.Y, reply.File)
+	}
+
+	return reply
+}
+
+func CallNotify(x int, files []string, reduce bool) TaskNotifyReply {
+
+	args := TaskNotifyArgs{X: x, Files: files, IsReduce: reduce}
+	reply := TaskNotifyReply{}
+
+	if call("Master.TaskNotify", &args, &reply) {
+		fmt.Printf("CallNotify reply.OK %v\n", reply.Ok)
 	}
 	return reply
 }

@@ -15,39 +15,36 @@ import (
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
-
-type ExampleArgs struct {
+type ReduceTaskArgs struct {
 	X int
 }
 
-type ExampleReply struct {
-	// The file to be processed
-	File     string
-	IsReduce bool
+type ReduceTaskReply struct {
 	Y        int
+	Files    []string
+	Finished bool
+}
+
+type MapTaskArgs struct {
+	X int
+}
+
+type MapTaskReply struct {
+	Y        int
+	File     string
+	Finished bool
 	NReduce  int
-	NMap     int
 }
 
-
-type ReduceArgs struct{}
-type ReduceReply struct{
-	// The file to be processed
-	Files []string
-	// Next Task Id
-	Y int
+type TaskNotifyArgs struct {
+	X        int
+	Files    []string
+	IsReduce bool
 }
 
-
-type MapArgs struct{
+type TaskNotifyReply struct {
+	Ok bool
 }
-
-type MapReply struct{
-	Y int
-	Files []string
-}
-
-
 
 // Add your RPC definitions here.
 

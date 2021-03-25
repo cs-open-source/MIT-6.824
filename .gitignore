@@ -4,3 +4,5 @@ api.key
 .vscode
 reduce_*.txt
 mr-*.txt
+.idea/
+.vscde/
