@@ -3,6 +3,6 @@ api.key
 *-handin.tar.gz
 .vscode
 reduce_*.txt
-mr-*.txt
+mr-out-*.txt
 .idea/
-.vscde/
+.vscdoe/
