@@ -7,7 +7,9 @@ package main
 // go build -buildmode=plugin mtiming.go
 //
 
-import "../mr"
+import (
+	"../mr"
+)
 import "strings"
 import "fmt"
 import "os"
@@ -75,6 +77,7 @@ func Map(filename string, contents string) []mr.KeyValue {
 	kva = append(kva, mr.KeyValue{
 		fmt.Sprintf("parallel-%v", pid),
 		fmt.Sprintf("%d", n)})
+
 	return kva
 }
 

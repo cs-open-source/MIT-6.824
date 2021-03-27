@@ -15,29 +15,22 @@ import (
 // example to show how to declare the arguments
 // and reply for an RPC.
 //
-type ReduceTaskArgs struct {
+
+
+type TaskArgs struct {
 	X int
 }
 
-type ReduceTaskReply struct {
-	Y        int
-	Files    []string
-	Finished bool
+
+type TaskReply struct {
+	T *Task
+	MasterState State
 }
 
-type MapTaskArgs struct {
-	X int
-}
-
-type MapTaskReply struct {
-	Y        int
-	File     string
-	Finished bool
-	NReduce  int
-}
 
 type TaskNotifyArgs struct {
-	X        int
+	TaskId        int
+	Y             int
 	Files    []string
 	IsReduce bool
 }

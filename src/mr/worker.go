@@ -44,7 +44,7 @@ func ihash(key string) int {
 // m: the id of this map worker
 // mapf: the Map Process of this model
 //
-func DoMap(m int, nReduce int, filename string, mapf func(string, string) []KeyValue) error {
+func DoMap(m,taskId, nReduce int, filename string, mapf func(string, string) []KeyValue) error {
 
 	// Step 1: Read from Input file
 	file, err := os.Open(filename)
@@ -80,7 +80,7 @@ func DoMap(m int, nReduce int, filename string, mapf func(string, string) []KeyV
 
 	for i := 0; i < nReduce; i++ {
 
-		reduceName := fmt.Sprintf("/tmp/reduce_%v_%v.txt", m, i)
+		reduceName := fmt.Sprintf("mr-%v-%v.txt", m, i)
 		intermediates = append(intermediates, reduceName)
 		ofile, _ := os.Create(reduceName)
 		enc := json.NewEncoder(ofile)
@@ -95,13 +95,13 @@ func DoMap(m int, nReduce int, filename string, mapf func(string, string) []KeyV
 	}
 
 	// Notify the master
-	CallNotify(m, intermediates, false)
+	CallNotify(m, taskId, intermediates, false)
 
 	// Return the related intermediate files
 	return nil
 }
 
-func DoReduce(r int, intermediates []string, reducef func(string, []string) string) error {
+func DoReduce(r,taskId int, intermediates []string, reducef func(string, []string) string) error {
 
 	// Step: Get the intermediates from Map Worker
 	var kvas ByKey
@@ -155,7 +155,7 @@ func DoReduce(r int, intermediates []string, reducef func(string, []string) stri
 
 	ofile.Close()
 
-	CallNotify(r, []string{oname}, true)
+	CallNotify(r,taskId, []string{oname}, true)
 
 	return nil
 }
@@ -166,66 +166,43 @@ func DoReduce(r int, intermediates []string, reducef func(string, []string) stri
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	mapProcess := true
-	x := 99
-	for mapProcess {
-		reply := CallGetMapTask(x)
+	//pid := os.Getpid()
+	run := true
+	x := 1
+	for run {
+		reply := callTask(x)
 		x += 1
-		mapProcess = !reply.Finished
-		if mapProcess && reply.Y != 0 {
-			go DoMap(reply.Y, reply.NReduce, reply.File, mapf)
+		run = reply.MasterState != Completed
+		if run && reply.T != nil && len(reply.T.Files) > 0{
+			switch reply.T.Type  {
+			case Map:
+				DoMap(reply.T.Y, reply.T.Id, reply.T.NReduce, reply.T.Files[0], mapf)
+			default:
+				DoReduce(reply.T.Y, reply.T.Id, reply.T.Files, reducef)
+			}
 		}
 	}
-
-	fmt.Println("Map Process has finished !")
-
-	reduceProcess := true
-	for reduceProcess {
-		reply := CallGetReduceTask(x)
-		x += 1
-		reduceProcess = !reply.Finished
-		if reduceProcess && reply.Y != 0 {
-			go DoReduce(reply.Y, reply.Files, reducef)
-		}
-	}
-
-	fmt.Println("Reduce Process has finished !")
-
+	//fmt.Printf("pid: %v Reduce Process has finished !\n",pid)
 }
 
-func CallGetReduceTask(x int) ReduceTaskReply {
+func callTask(x int) TaskReply{
 
-	args := ReduceTaskArgs{X: x}
+	args := TaskArgs{X: x}
+	reply := TaskReply{}
 
-	reply := ReduceTaskReply{}
-
-	if call("Master.GetReduceTask", &args, &reply) {
-		fmt.Printf("CallGetReduceTask reply.Y %v reply.File  %v\n", reply.Y, reply.Files)
+	if call("Master.GetTask",&args, &reply) && reply.T != nil{
+		//fmt.Printf("Master.GetTask reply %v\n",reply.T)
 	}
-
 	return reply
 }
 
-func CallGetMapTask(x int) MapTaskReply {
+func CallNotify(y,taskId int, files []string, reduce bool) TaskNotifyReply {
 
-	args := MapTaskArgs{X: x}
-
-	reply := MapTaskReply{}
-
-	if call("Master.GetMapTask", &args, &reply) {
-		fmt.Printf("CallGetMapTask reply.Y %v reply.File  %v\n", reply.Y, reply.File)
-	}
-
-	return reply
-}
-
-func CallNotify(x int, files []string, reduce bool) TaskNotifyReply {
-
-	args := TaskNotifyArgs{X: x, Files: files, IsReduce: reduce}
+	args := TaskNotifyArgs{Y:y,TaskId: taskId, Files: files, IsReduce: reduce}
 	reply := TaskNotifyReply{}
 
 	if call("Master.TaskNotify", &args, &reply) {
-		fmt.Printf("CallNotify reply.OK %v\n", reply.Ok)
+		//fmt.Printf("Master.TaskNotify reply %v\n", reply)
 	}
 	return reply
 }

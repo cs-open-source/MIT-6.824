@@ -1,14 +1,12 @@
 package mr
 
 import (
-	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/rpc"
 	"os"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -17,105 +15,141 @@ type State int
 // The state of the machine (Reduce and Map machine)
 const (
 	_          State = iota
-	Idle             // 空闲
+	Idle            // 空闲
 	InProgress       // 正在运行中
 	Completed        // 完成
+	Error
 )
 
+
+type Phase int
+
+const (
+	Map Phase = iota
+	Reduce
+)
+
+// The task
+type Task struct {
+
+	Y int
+	// The id of task
+	Id int
+	// The type of task Map[0] or Reduce[1]
+	Type Phase
+	// The state of this task, type State
+	WorkerState State
+    //
+    Files []string
+
+	// The number of Reduce worker
+	NReduce int
+
+	// The start time of this worker
+	StartTime int64
+
+}
+
 type Master struct {
+
 	sync.Mutex
 
-	MapTaskIntervals map[int]int64
-	// Map Task and it's file
-	MapTasks map[int]string
+	// 待处理的任务列表
+	IdleTasks chan*Task
 
-	ReduceTasks map[int][]string
-	//
-	ReduceTaskIntervals map[int]int64
-	//
+	// 正在处理的任务列表, key:TaskId, value:The identity of this task
+	InProcessTasks map[int]*Task
+
+	// 没有已完成列表，已完成的直接删掉处理
+
 	Intermediates [][]string
 
 	FinalFiles []string
+
 	// the files of all map worker
 	Files []string
+
+	// The state of Master worker
+	MasterStatus State
+
 	// The current number of Map Workers
 	M int64
 	// The current number of Reduce Workers
 	R int64
-	// The current number of Map Workers
+	// The  number of Map Workers
 	NMap int64
-	// The current number of Reduce Workers
+	// The  number of Reduce Workers
 	NReduce int64
 
-	MFinish int64
-
-	RFinish int64
 }
 
-// Your code here -- RPC handlers for the worker to call.
-func (m *Master) GetReduceTask(args *ReduceTaskArgs, reply *ReduceTaskReply) error {
-	k := atomic.AddInt64(&m.M, 1)
-	if k <= m.NReduce {
-		m.Lock()
-		log.Printf(" GetReduceTask %v", k)
-		reply.Files = m.Intermediates[0]
-		m.Intermediates = m.Intermediates[1:]
-		m.ReduceTasks[int(k)] = reply.Files
-		m.ReduceTaskIntervals[int(k)] = time.Now().Unix()
-		reply.Y = int(k)
-		reply.Finished = false
-		m.Unlock()
-	} else {
-		reply.Finished = atomic.CompareAndSwapInt64(&m.RFinish, m.NReduce, m.NReduce)
+
+func (m *Master) GetTask(args *TaskArgs, reply *TaskReply) error{
+
+	// if true 代表已经完成
+	if reply.MasterState != Completed{
+
+		reply.MasterState = InProgress
+		task , ok := <-m.IdleTasks
+		if ok{
+			task.StartTime = time.Now().Unix()
+			task.Id = args.X + 1
+			reply.T = task
+
+			m.Lock()
+			m.InProcessTasks[task.Y] = task
+			m.Unlock()
+		}
+
 	}
-	log.Printf("ReduceTaskReply : %v", reply)
 	return nil
 }
 
-func (m *Master) GetMapTask(args *MapTaskArgs, reply *MapTaskReply) error {
-	k := atomic.AddInt64(&m.R, 1)
-	if k <= m.NMap {
-		m.Lock()
-		log.Printf(" GetMapTask %v", k)
-		reply.File = m.Files[0]
-		m.Files = m.Files[1:]
-		m.MapTasks[int(k)] = reply.File
-		m.MapTaskIntervals[int(k)] = time.Now().Unix()
-		reply.Y = int(k)
-		reply.NReduce = int(m.NReduce)
-		reply.Finished = false
-		m.Unlock()
-	} else {
-		reply.Finished = atomic.CompareAndSwapInt64(&m.MFinish, m.NMap, m.NMap)
+func (m *Master) GenerateReduceTasks() {
+
+	for i:=0;i< int(m.NReduce);i++{
+		task := Task{Y:i,Type: Reduce,WorkerState: Idle,Files:m.Intermediates[i],NReduce: int(m.NReduce)}
+		m.IdleTasks <- &task
 	}
-	log.Printf("MapTaskReply : %v", reply)
-	return nil
+
 }
+
+
+func (m *Master) GenerateRMapTasks() {
+
+	for i:=0;i< int(m.NMap);i++{
+		task := Task{Y:i,Type: Map,WorkerState: Idle,Files:[]string{m.Files[i]},NReduce: int(m.NReduce)}
+		m.IdleTasks <- &task
+	}
+
+}
+
 
 func (m *Master) TaskNotify(args *TaskNotifyArgs, reply *TaskNotifyReply) error {
 
-	log.Printf("%v, %v task has finised", args.X, args.IsReduce)
-	if args.IsReduce {
-		m.Lock()
-		if val, ok := m.ReduceTaskIntervals[args.X]; ok {
-			log.Printf("%v Reduce worker %v Finished ", args.X, val)
-			m.RFinish += 1
-			delete(m.ReduceTaskIntervals, args.X)
-			m.FinalFiles = append(m.FinalFiles, args.Files...)
-		}
-		m.Unlock()
-	} else {
-		m.Lock()
-		if val, ok := m.MapTaskIntervals[args.X]; ok {
-			log.Printf("%v Map worker %v Finished ", args.X, val)
-			m.MFinish += 1
-			delete(m.MapTaskIntervals, args.X)
+	//fmt.Printf("%v, %v task has finised! \n", args.Y, args.IsReduce)
+
+	m.Lock()
+	if val, ok := m.InProcessTasks[args.Y]; ok && val.Id == args.TaskId {
+		delete(m.InProcessTasks, args.Y)
+		if !args.IsReduce{
+			m.M += 1
 			for i := 0; i < int(m.NReduce); i++ {
 				m.Intermediates[i] = append(m.Intermediates[i], args.Files[i])
 			}
+			if m.M == m.NMap{
+				go m.GenerateReduceTasks()
+			}
+		}else{
+			m.R += 1
+			m.FinalFiles = append(m.FinalFiles, args.Files...)
+			if m.R == m.NReduce{
+				close(m.IdleTasks)
+				m.MasterStatus = Completed
+			}
 		}
-		m.Unlock()
 	}
+	m.Unlock()
 	reply.Ok = true
 	return nil
 }
@@ -130,9 +164,9 @@ func (m *Master) server() {
 	sockname := masterSock()
 	os.Remove(sockname)
 	l, e := net.Listen("unix", sockname)
-	fmt.Printf("Master listen on prot:%v", sockname)
+	//fmt.Printf("Master listen on prot:%v \n", sockname)
 	if e != nil {
-		log.Fatal("listen error:", e)
+		log.Fatal("listen error: \n", e)
 	}
 	go http.Serve(l, nil)
 }
@@ -143,45 +177,24 @@ func (m *Master) server() {
 //
 func (m *Master) Done() bool {
 	ret := false
-	for !atomic.CompareAndSwapInt64(&m.RFinish, m.NReduce, m.NReduce) {
+	for m.MasterStatus != Completed{
+        // Stop the world
 		m.Lock()
-		var timeout []int
-		if m.MFinish != m.NMap {
-			for k, v := range m.MapTaskIntervals {
-				if time.Now().Unix()-v > 10 {
-					log.Printf(" %v, Map worker timeout, try to allocate another machine to run  it", k)
-					// restore the files
-					m.M = m.M - 1
-					m.Files = append(m.Files, m.MapTasks[k])
-					delete(m.MapTasks, k)
-					timeout = append(timeout, k)
-				}
-			}
-			for _, k := range timeout {
-				delete(m.MapTaskIntervals, k)
-			}
-		} else {
-			for k, v := range m.ReduceTaskIntervals {
-				if time.Now().Unix()-v > 10 {
-					log.Printf(" %v, Reduce worker timeout, try to allocate another machine to run  it", k)
+		for key, task := range m.InProcessTasks{
 
-					// restore the files
-					m.R = m.R - 1
-					m.Intermediates = append(m.Intermediates, m.ReduceTasks[k])
-					delete(m.ReduceTasks, k)
-					timeout = append(timeout, k)
-				}
-			}
-			for _, k := range timeout {
-				delete(m.ReduceTaskIntervals, k)
+			if time.Now().Unix() - task.StartTime > 10{
+				// 超时将其放入空闲链表
+				task.WorkerState = Idle
+				m.IdleTasks <- task
+				delete(m.InProcessTasks,key)
 			}
 		}
 		m.Unlock()
+
 		time.Sleep(1000)
 	}
-	// Your code here.
 
-	fmt.Printf("All tasks finished, and result are %v", m.FinalFiles)
+	//fmt.Printf("All tasks finished, and result are %v \n", m.FinalFiles)
 	ret = true
 	return ret
 }
@@ -192,26 +205,23 @@ func (m *Master) Done() bool {
 // nReduce is the number of reduce tasks to use.
 //
 func MakeMaster(files []string, nReduce int) *Master {
-	m := Master{}
 
+	// Init Master
+	m := Master{}
 	// Your code here.
 	m.Files = files
 	m.M = 0
 	m.R = 0
 	m.NMap = int64(len(files))
 	m.NReduce = int64(nReduce)
-	m.MFinish = 0
-	m.RFinish = 0
-	m.ReduceTaskIntervals = make(map[int]int64)
-	m.ReduceTasks = make(map[int][]string)
-	m.MapTaskIntervals = make(map[int]int64)
-	m.MapTasks = make(map[int]string)
-
 	for i := 0; i < nReduce; i++ {
 		m.Intermediates = append(m.Intermediates, []string{})
 	}
+	m.MasterStatus = Idle
+	m.InProcessTasks = make(map[int]*Task)
+	m.IdleTasks = make(chan*Task,m.NReduce)
 
-	log.Printf(" Master is %v", m)
+	go m.GenerateRMapTasks()
 
 	m.server()
 	return &m
