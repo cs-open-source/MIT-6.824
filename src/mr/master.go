@@ -54,7 +54,7 @@ type Master struct {
 
 // Your code here -- RPC handlers for the worker to call.
 func (m *Master) GetReduceTask(args *ReduceTaskArgs, reply *ReduceTaskReply) error {
-	k := atomic.AddInt64(&m.M, 1)
+	k := atomic.AddInt64(&m.R, 1)
 	if k <= m.NReduce {
 		m.Lock()
 		log.Printf(" GetReduceTask %v", k)
@@ -66,14 +66,15 @@ func (m *Master) GetReduceTask(args *ReduceTaskArgs, reply *ReduceTaskReply) err
 		reply.Finished = false
 		m.Unlock()
 	} else {
+		atomic.AddInt64(&m.R, -1)
 		reply.Finished = atomic.CompareAndSwapInt64(&m.RFinish, m.NReduce, m.NReduce)
 	}
-	log.Printf("ReduceTaskReply : %v", reply)
+	//log.Printf("ReduceTaskReply : %v", reply)
 	return nil
 }
 
 func (m *Master) GetMapTask(args *MapTaskArgs, reply *MapTaskReply) error {
-	k := atomic.AddInt64(&m.R, 1)
+	k := atomic.AddInt64(&m.M, 1)
 	if k <= m.NMap {
 		m.Lock()
 		log.Printf(" GetMapTask %v", k)
@@ -86,9 +87,9 @@ func (m *Master) GetMapTask(args *MapTaskArgs, reply *MapTaskReply) error {
 		reply.Finished = false
 		m.Unlock()
 	} else {
+		atomic.AddInt64(&m.M,-1)
 		reply.Finished = atomic.CompareAndSwapInt64(&m.MFinish, m.NMap, m.NMap)
 	}
-	log.Printf("MapTaskReply : %v", reply)
 	return nil
 }
 
@@ -145,6 +146,7 @@ func (m *Master) Done() bool {
 	ret := false
 	for !atomic.CompareAndSwapInt64(&m.RFinish, m.NReduce, m.NReduce) {
 		m.Lock()
+		hasTimeout := false
 		var timeout []int
 		if m.MFinish != m.NMap {
 			for k, v := range m.MapTaskIntervals {
@@ -158,6 +160,7 @@ func (m *Master) Done() bool {
 				}
 			}
 			for _, k := range timeout {
+				hasTimeout = true
 				delete(m.MapTaskIntervals, k)
 			}
 		} else {
@@ -173,10 +176,17 @@ func (m *Master) Done() bool {
 				}
 			}
 			for _, k := range timeout {
+				hasTimeout = true
 				delete(m.ReduceTaskIntervals, k)
 			}
 		}
+
+		if hasTimeout{
+			log.Printf(" m.Reduce %v. m.Map %v, m.Files %v, m.Intermediate %v",m.R,m.M,len(m.Files),len(m.Intermediates))
+		}
+
 		m.Unlock()
+
 		time.Sleep(1000)
 	}
 	// Your code here.

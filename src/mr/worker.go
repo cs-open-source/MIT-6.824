@@ -173,7 +173,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		x += 1
 		mapProcess = !reply.Finished
 		if mapProcess && reply.Y != 0 {
-			go DoMap(reply.Y, reply.NReduce, reply.File, mapf)
+			DoMap(reply.Y, reply.NReduce, reply.File, mapf)
 		}
 	}
 
@@ -185,7 +185,7 @@ func Worker(mapf func(string, string) []KeyValue,
 		x += 1
 		reduceProcess = !reply.Finished
 		if reduceProcess && reply.Y != 0 {
-			go DoReduce(reply.Y, reply.Files, reducef)
+			DoReduce(reply.Y, reply.Files, reducef)
 		}
 	}
 
@@ -199,8 +199,8 @@ func CallGetReduceTask(x int) ReduceTaskReply {
 
 	reply := ReduceTaskReply{}
 
-	if call("Master.GetReduceTask", &args, &reply) {
-		fmt.Printf("CallGetReduceTask reply.Y %v reply.File  %v\n", reply.Y, reply.Files)
+	if call("Master.GetReduceTask", &args, &reply) && reply.Y != 0 {
+		//fmt.Printf("CallGetReduceTask reply.Y %v reply.File  %v\n", reply.Y, reply.Files)
 	}
 
 	return reply
@@ -212,8 +212,8 @@ func CallGetMapTask(x int) MapTaskReply {
 
 	reply := MapTaskReply{}
 
-	if call("Master.GetMapTask", &args, &reply) {
-		fmt.Printf("CallGetMapTask reply.Y %v reply.File  %v\n", reply.Y, reply.File)
+	if call("Master.GetMapTask", &args, &reply) && reply.Y != 0{
+		//fmt.Printf("CallGetMapTask reply.Y %v reply.File  %v\n", reply.Y, reply.File)
 	}
 
 	return reply
@@ -224,8 +224,8 @@ func CallNotify(x int, files []string, reduce bool) TaskNotifyReply {
 	args := TaskNotifyArgs{X: x, Files: files, IsReduce: reduce}
 	reply := TaskNotifyReply{}
 
-	if call("Master.TaskNotify", &args, &reply) {
-		fmt.Printf("CallNotify reply.OK %v\n", reply.Ok)
+	if call("Master.TaskNotify", &args, &reply)  {
+		//fmt.Printf("CallNotify reply.OK %v\n", reply.Ok)
 	}
 	return reply
 }
