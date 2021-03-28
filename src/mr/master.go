@@ -189,7 +189,6 @@ func (m *Master) Done() bool {
         // Stop the world
 		m.Lock()
 		for key, task := range m.InProcessTasks{
-
 			if time.Now().Unix() - task.StartTime > 10{
 				// 超时将其放入空闲链表
 				task.WorkerState = Idle
@@ -201,7 +200,6 @@ func (m *Master) Done() bool {
 
 		time.Sleep(1000)
 	}
-
 
 	fmt.Printf("All tasks finished, and result are %v \n", m.FinalFiles)
 	ret = true
