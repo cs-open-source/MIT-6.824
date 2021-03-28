@@ -166,7 +166,8 @@ func DoReduce(r,taskId int, intermediates []string, reducef func(string, []strin
 func Worker(mapf func(string, string) []KeyValue,
 	reducef func(string, []string) string) {
 
-	//pid := os.Getpid()
+	pid := os.Getpid()
+	CallRegisterWorker(pid)
 	run := true
 	x := 1
 	for run {
@@ -182,6 +183,8 @@ func Worker(mapf func(string, string) []KeyValue,
 			}
 		}
 	}
+
+	CallDeleteWorker(pid)
 	//fmt.Printf("pid: %v Reduce Process has finished !\n",pid)
 }
 
@@ -190,8 +193,8 @@ func callTask(x int) TaskReply{
 	args := TaskArgs{X: x}
 	reply := TaskReply{}
 
-	if call("Master.GetTask",&args, &reply) && reply.T != nil{
-		//fmt.Printf("Master.GetTask reply %v\n",reply.T)
+	if call("Master.GetTask",&args, &reply) && (reply.T != nil || reply.MasterState == Completed){
+		fmt.Printf("Master.GetTask reply %v, %v\n",reply.T,reply.MasterState)
 	}
 	return reply
 }
@@ -202,9 +205,33 @@ func CallNotify(y,taskId int, files []string, reduce bool) TaskNotifyReply {
 	reply := TaskNotifyReply{}
 
 	if call("Master.TaskNotify", &args, &reply) {
-		//fmt.Printf("Master.TaskNotify reply %v\n", reply)
+		fmt.Printf("Master.TaskNotify reply %v, y:%v, id:%v\n", reply,y,taskId)
 	}
 	return reply
+}
+
+func CallRegisterWorker(pid int) error  {
+
+	args := RegisterWorkerArgs{Pid: pid}
+	reply := RegisterWorkerReply{}
+
+	if call("Master.Register", &args, &reply){
+		fmt.Printf(" Master Register %v\n",pid)
+	}
+
+	return nil
+}
+
+func CallDeleteWorker(pid int) error  {
+
+	args := DeleteWorkerArgs{Pid: pid}
+	reply := DeleteWorkerReply{}
+
+	if call("Master.Delete", &args, &reply){
+		fmt.Printf(" Master Delete %v\n",pid)
+	}
+
+	return nil
 }
 
 //

@@ -39,6 +39,24 @@ type TaskNotifyReply struct {
 	Ok bool
 }
 
+
+type RegisterWorkerArgs struct {
+	Pid int
+}
+
+type RegisterWorkerReply struct {
+	Ok bool
+}
+
+
+type DeleteWorkerArgs struct {
+	Pid int
+}
+
+type DeleteWorkerReply struct {
+	Ok bool
+}
+
 // Add your RPC definitions here.
 
 // Cook up a unique-ish UNIX-domain socket name

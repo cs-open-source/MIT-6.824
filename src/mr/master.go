@@ -1,6 +1,7 @@
 package mr
 
 import (
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ const (
 	Idle            // 空闲
 	InProgress       // 正在运行中
 	Completed        // 完成
+	Finished
 	Error
 )
 
@@ -64,6 +66,8 @@ type Master struct {
 
 	Intermediates [][]string
 
+	RegisterWorkers map[int]State
+
 	FinalFiles []string
 
 	// the files of all map worker
@@ -86,10 +90,11 @@ type Master struct {
 
 func (m *Master) GetTask(args *TaskArgs, reply *TaskReply) error{
 
+	reply.MasterState = m.MasterStatus
 	// if true 代表已经完成
-	if reply.MasterState != Completed{
+	if m.MasterStatus != Completed{
 
-		reply.MasterState = InProgress
+		reply.MasterState = m.MasterStatus
 		task , ok := <-m.IdleTasks
 		if ok{
 			task.StartTime = time.Now().Unix()
@@ -138,6 +143,7 @@ func (m *Master) TaskNotify(args *TaskNotifyArgs, reply *TaskNotifyReply) error 
 				m.Intermediates[i] = append(m.Intermediates[i], args.Files[i])
 			}
 			if m.M == m.NMap{
+				log.Printf("Master Task has been finished, Master:%v,%v,%v,%v\n",m.R,m.NReduce,m.M,m.NMap)
 				go m.GenerateReduceTasks()
 			}
 		}else{
@@ -145,9 +151,11 @@ func (m *Master) TaskNotify(args *TaskNotifyArgs, reply *TaskNotifyReply) error 
 			m.FinalFiles = append(m.FinalFiles, args.Files...)
 			if m.R == m.NReduce{
 				close(m.IdleTasks)
+				log.Printf("Reduce Task has been finished, Master:%v,%v,%v,%v\n",m.R,m.NReduce,m.M,m.NMap)
 				m.MasterStatus = Completed
 			}
 		}
+
 	}
 	m.Unlock()
 	reply.Ok = true
@@ -177,7 +185,7 @@ func (m *Master) server() {
 //
 func (m *Master) Done() bool {
 	ret := false
-	for m.MasterStatus != Completed{
+	for m.MasterStatus != Finished{
         // Stop the world
 		m.Lock()
 		for key, task := range m.InProcessTasks{
@@ -194,10 +202,35 @@ func (m *Master) Done() bool {
 		time.Sleep(1000)
 	}
 
-	//fmt.Printf("All tasks finished, and result are %v \n", m.FinalFiles)
+
+	fmt.Printf("All tasks finished, and result are %v \n", m.FinalFiles)
 	ret = true
 	return ret
 }
+
+func (m *Master) Register(args *RegisterWorkerArgs, reply *RegisterWorkerReply) error  {
+	m.Lock()
+	m.RegisterWorkers[args.Pid] = InProgress
+	log.Printf("Master Register Pid:%v Worker\n",args.Pid)
+	m.Unlock()
+	reply.Ok = true
+	return nil
+}
+
+func (m *Master) Delete(args *DeleteWorkerArgs, reply *DeleteWorkerReply) error  {
+	m.Lock()
+	m.RegisterWorkers[args.Pid] = Completed
+	log.Printf("Master Deleted Pid:%v Worker\n",args.Pid)
+	for _,v := range m.RegisterWorkers{
+		if v != Completed{
+			m.MasterStatus = Finished
+		}
+	}
+	m.Unlock()
+	reply.Ok = true
+	return nil
+}
+
 
 //
 // create a Master.
@@ -218,8 +251,9 @@ func MakeMaster(files []string, nReduce int) *Master {
 		m.Intermediates = append(m.Intermediates, []string{})
 	}
 	m.MasterStatus = Idle
-	m.InProcessTasks = make(map[int]*Task)
+	m.InProcessTasks = make(map[int]*Task,10)
 	m.IdleTasks = make(chan*Task,m.NReduce)
+	m.RegisterWorkers = make(map[int]State,3)
 
 	go m.GenerateRMapTasks()
 
